@@ -14,3 +14,4 @@ pub const MAX_TOTAL_MINT: Item<Uint256> = Item::new("max_total_mint");
 pub const IS_WHITELISTED: Map<&String, bool> = Map::new("is_whitelisted");
 pub const URI_STATUS: Item<bool> = Item::new("uri_status");
 pub const NFTS: Item<Vec<Uint256>> = Item::new("uri_status");
+pub const DENOM: Item<String> = Item::new("state");

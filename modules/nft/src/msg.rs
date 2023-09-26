@@ -48,6 +48,7 @@ pub enum ExecuteMsg {
         data: Option<Binary>,
         receiver: String,
     },
+    MintAndSend { account: String, amount: u128 },
     Mint {
         id: String,
         uri: Option<String>,

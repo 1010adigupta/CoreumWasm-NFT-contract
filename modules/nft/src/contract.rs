@@ -1,21 +1,29 @@
+use coreum_wasm_sdk::assetft::{
+    self, BalanceResponse, FrozenBalanceResponse, FrozenBalancesResponse, Query, TokenResponse,
+    TokensResponse, WhitelistedBalanceResponse, WhitelistedBalancesResponse,
+};
 use coreum_wasm_sdk::assetnft::{
     self, BurntNFTResponse, BurntNFTsInClassResponse, ClassResponse, ClassesResponse,
     FrozenResponse, ParamsResponse, WhitelistedAccountsForNFTResponse, WhitelistedResponse,
 };
 
+use crate::customResponse::GetInfoResponse;
+use crate::error::ContractError;
+use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
+use crate::state::{
+    CLASS_ID, CURRENT_TOKEN_ID, DENOM, IS_WHITELISTED, MAX_TOTAL_MINT, MINT_PRICE, NFTS,
+    PREREVEAL_TOKEN_URI, PROTOCOL_ADDRESS, PROTOCOL_FEE, SALE_END_TIME, SALE_START_TIME,
+    TREASURY_ADDRESS, URI_STATUS,
+};
 use coreum_wasm_sdk::core::{CoreumMsg, CoreumQueries, CoreumResult};
 use coreum_wasm_sdk::nft;
 use coreum_wasm_sdk::pagination::PageRequest;
 use cosmwasm_std::{
-    entry_point, to_binary, Binary, Deps, DepsMut, Env, MessageInfo, QueryRequest, Response,
-    StdResult, Uint256,
+    coin, entry_point, to_binary, Binary, Coin, Deps, DepsMut, Env, MessageInfo, QueryRequest,
+    Response, StdResult, SubMsg, Uint256,
 };
 use cw2::set_contract_version;
 use cw_ownable::{assert_owner, initialize_owner};
-use crate::customResponse::{GetInfoResponse};
-use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
-use crate::state::{CLASS_ID, URI_STATUS, NFTS, MAX_TOTAL_MINT, IS_WHITELISTED, PREREVEAL_TOKEN_URI, TREASURY_ADDRESS, PROTOCOL_ADDRESS, CURRENT_TOKEN_ID, MINT_PRICE, SALE_START_TIME, SALE_END_TIME, PROTOCOL_FEE};
 // version info for migration info
 const CONTRACT_NAME: &str = env!("CARGO_PKG_NAME");
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -97,67 +105,137 @@ pub fn execute(
             remove_from_white_list(deps, info, id, account)
         }
         ExecuteMsg::Send { id, receiver } => send(deps, info, id, receiver),
-        ExecuteMsg::Purchase {count, id,
+        ExecuteMsg::Purchase {
+            count,
+            id,
             uri,
             uri_hash,
-            data, receiver} => purchase(deps, info, id, count, uri, uri_hash, data, receiver),
+            data,
+            receiver,
+        } => purchase(deps, info, id, count, uri, uri_hash, data, receiver),
+
+        ExecuteMsg::MintAndSend { account, amount } => mint_and_send(&deps, &info, account, amount),
     }
 }
 
 // ********** Transactions **********
+fn mint_and_send(
+    deps: &DepsMut,
+    info: &MessageInfo,
+    account: String,
+    amount: u128,
+) -> CoreumResult<ContractError> {
+    assert_owner(deps.storage, &info.sender)?;
+    let denom = DENOM.load(deps.storage)?;
 
-fn purchase(deps: DepsMut,
-    info: MessageInfo,id: String,
+    let mint_msg = SubMsg::new(CoreumMsg::AssetFT(assetft::Msg::Mint {
+        coin: coin(amount, denom.clone()),
+    }));
+
+    let send_msg = SubMsg::new(cosmwasm_std::BankMsg::Send {
+        to_address: account,
+        amount: vec![Coin {
+            amount: amount.into(),
+            denom: denom.clone(),
+        }],
+    });
+
+    Ok(Response::new()
+        .add_attribute("method", "mint_and_send")
+        .add_attribute("denom", denom)
+        .add_attribute("amount", amount.to_string())
+        .add_submessages([mint_msg, send_msg]))
+}
+fn purchase(
+    deps: DepsMut,
+    info: MessageInfo,
+    id: String,
     count: Uint256,
     uri: Option<String>,
     uri_hash: Option<String>,
-    data: Option<Binary>,receiver: String) -> CoreumResult<ContractError> {
-        assert_owner(deps.storage, &info.sender)?;
-let owner = info.sender.clone().to_string();
-        let permission = IS_WHITELISTED.load(deps.storage, &owner)?;
-        assert_eq!(permission, true, "You are not whitelisted");
-        let my_integer: u32 = 0;
-        let zero = Uint256::from(my_integer);
-        if count <= zero {
-            panic!("Count must be greater than zero");
-        };
-        let current_token_id = CURRENT_TOKEN_ID.load(deps.storage)?;
-        let max_total_mint = MAX_TOTAL_MINT.load(deps.storage)?;
+    data: Option<Binary>,
+    receiver: String,
+) -> CoreumResult<ContractError> {
+    assert_owner(deps.storage, &info.sender)?;
+    let owner = info.sender.clone().to_string();
+    let permission = IS_WHITELISTED.load(deps.storage, &owner)?;
+    let class_id = CLASS_ID.load(deps.storage)?;
+    let current_token_id = CURRENT_TOKEN_ID.load(deps.storage)?;
+    let max_total_mint = MAX_TOTAL_MINT.load(deps.storage)?;
+    let mint_price = MINT_PRICE.load(deps.storage)?;
+    let protocol_address = PROTOCOL_ADDRESS.load(deps.storage)?;
+    let treasury_address = TREASURY_ADDRESS.load(deps.storage)?;
+    let my_integer_0: u32 = 0;
+    let zero = Uint256::from(my_integer_0);
+    let my_integer_100: u32 = 100;
+    let hundred = Uint256::from(my_integer_100);
+    assert_eq!(permission, true, "You are not whitelisted");
 
-        if (current_token_id + count) > max_total_mint {
-            panic!("Max total mint exceeded");
-        };
-        let mint_price = MINT_PRICE.load(deps.storage)?;
-        let funds = Uint256::from(info.funds.amount);
-        if funds < mint_price*count {
-            panic!("Failed to purchase");
-        } ;
-        
-        let class_id = CLASS_ID.load(deps.storage)?;
-    
-        let msg_mint = CoreumMsg::AssetNFT(assetnft::Msg::Mint {
-            class_id: class_id.clone(),
-            id: id.clone(),
-            uri,
-            uri_hash,
-            data,
-        });
+    if count <= zero {
+        panic!("Count must be greater than zero");
+    };
 
-        let msg_send = CoreumMsg::NFT(nft::Msg::Send {
-            class_id: class_id.clone(),
-            id: id.clone(),
-            receiver,
-        });
-    
-    
-        Ok(Response::new()
-            .add_attribute("method", "mint")
-            .add_attribute("method", "send")
-            .add_attribute("class_id", class_id)
-            .add_attribute("id", id)
-            .add_message(msg_mint)
-            .add_message(msg_send))
+    if (current_token_id + count) > max_total_mint {
+        panic!("Max total mint exceeded");
+    };
+
+    let funds = info
+        .funds
+        .iter()
+        .find(|coin| coin.denom == "uscrt")
+        .map(|coin| Uint256::from(coin.amount))
+        .unwrap_or_else(Uint256::zero);
+    if funds < mint_price * count {
+        panic!("Failed to purchase");
+    };
+
+    let address_protocol = String::from(protocol_address);
+
+    let protocol_fee_amount: Uint256 =
+        funds.checked_mul(PROTOCOL_FEE.load(deps.storage)?).unwrap() / hundred;
+    let protocol_fees_arr: [u8; 32] = protocol_fee_amount.to_be_bytes();
+    let mut result1: u128 = 0;
+    for i in 0..16 {
+        result1 <<= 8; // Shift the current value left by 8 bits
+        result1 |= protocol_fees_arr[i] as u128; // Bitwise OR with the current byte
     }
+    let protocol_fee_amount = result1;
+    let funds_arr: [u8; 32] = funds.to_be_bytes();
+    let mut result: u128 = 0;
+    for i in 0..16 {
+        result <<= 8; // Shift the current value left by 8 bits
+        result |= funds_arr[i] as u128; // Bitwise OR with the current byte
+    }
+    let amount = result;
+    let treasury_amount = amount - protocol_fee_amount;
+    let address_treasury = String::from(treasury_address);
+
+    let protocol_fee_send_response = mint_and_send(&deps, &info, address_protocol, protocol_fee_amount);
+
+    let treasury_fee_send_response = mint_and_send(&deps, &info, address_treasury, treasury_amount);
+
+    let msg_mint = CoreumMsg::AssetNFT(assetnft::Msg::Mint {
+        class_id: class_id.clone(),
+        id: id.clone(),
+        uri,
+        uri_hash,
+        data,
+    });
+
+    let msg_send = CoreumMsg::NFT(nft::Msg::Send {
+        class_id: class_id.clone(),
+        id: id.clone(),
+        receiver,
+    });
+
+    Ok(Response::new()
+        .add_attribute("method", "mint")
+        .add_attribute("method", "send")
+        .add_attribute("class_id", class_id)
+        .add_attribute("id", id)
+        .add_message(msg_mint)
+        .add_message(msg_send))
+}
 
 fn mint(
     deps: DepsMut,
@@ -247,9 +325,9 @@ fn add_to_white_list(
         id: id.clone(),
         account,
     });
-   
+
     let yes = true;
-      
+
     IS_WHITELISTED.save(deps.storage, &cloned_account, &yes)?;
 
     Ok(Response::new()
@@ -304,9 +382,6 @@ fn send(
         .add_message(msg))
 }
 
-
-                
-
 // ********** Queries **********
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -329,19 +404,18 @@ pub fn query(deps: Deps<CoreumQueries>, _env: Env, msg: QueryMsg) -> StdResult<B
         QueryMsg::ClassesNft {} => to_binary(&query_nft_classes(deps)?),
         QueryMsg::BurntNft { nft_id } => to_binary(&query_burnt_nft(deps, nft_id)?),
         QueryMsg::BurntNftsInClass {} => to_binary(&query_burnt_nfts_in_class(deps)?),
-        QueryMsg::GetInfo {owner} => to_binary(&get_info(deps, owner)?),
+        QueryMsg::GetInfo { owner } => to_binary(&get_info(deps, owner)?),
     }
 }
-fn get_info(deps: Deps<CoreumQueries>, owner: String) -> StdResult<GetInfoResponse>{
-    
+fn get_info(deps: Deps<CoreumQueries>, owner: String) -> StdResult<GetInfoResponse> {
     let current_token_id = CURRENT_TOKEN_ID.load(deps.storage)?;
     let balance = query_balance(deps, owner.clone())?;
     let max_total_mint = MAX_TOTAL_MINT.load(deps.storage)?;
 
     let res = GetInfoResponse {
-    current_token_id: current_token_id,
-    balance: balance,
-    max_total_mint: max_total_mint,
+        current_token_id: current_token_id,
+        balance: balance,
+        max_total_mint: max_total_mint,
     };
     Ok(res)
 }
